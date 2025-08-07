@@ -7,6 +7,11 @@ from .models import Place, Queue, Ticket
 from .serializers import PlaceSerializer, QueueSerializer, TicketSerializer
 from math import radians, cos, sin, asin, sqrt
 from rest_framework.exceptions import ValidationError, NotAuthenticated
+from rest_framework.generics import ListCreateAPIView, RetrieveUpdateAPIView
+from rest_framework.permissions import BasePermission
+from django.shortcuts import get_object_or_404
+from .utils import send_queue_update
+
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -69,6 +74,10 @@ class JoinQueueView(APIView):
             return Response({'detail': 'You already have an active ticket.'}, status=status.HTTP_400_BAD_REQUEST)
 
         ticket = Ticket.objects.create(queue=queue, user=user, number=last_ticket_number + 1)
+        send_queue_update(queue.place.id, {
+                "type": "ticket_created",
+                "ticket": TicketSerializer(ticket).data
+            })
         return Response(TicketSerializer(ticket).data, status=status.HTTP_201_CREATED)
 
 
@@ -83,4 +92,61 @@ class LeaveQueueView(APIView):
 
         ticket.is_active = False
         ticket.save()
+        send_queue_update(ticket.queue.place.id, {
+                "type": "ticket_left",
+                "ticket_id": ticket.id
+            })
         return Response({'status': 'left'}, status=status.HTTP_200_OK)
+
+
+# ---------- گام بعدی: داشبورد مدیریت صف ---------- #
+
+class IsPlaceAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.is_place_admin
+
+
+class AdminQueuesView(ListCreateAPIView):
+    permission_classes = [IsPlaceAdmin]
+    serializer_class = QueueSerializer
+
+    def get_queryset(self):
+        return Queue.objects.filter(place__owner=self.request.user)
+
+    def perform_create(self, serializer):
+        place_id = self.request.data.get("place_id")
+        place = get_object_or_404(Place, id=place_id, owner=self.request.user)
+        serializer.save(place=place)
+
+
+class AdminTicketsView(APIView):
+    permission_classes = [IsPlaceAdmin]
+
+    def get(self, request, queue_id):
+        queue = get_object_or_404(Queue, id=queue_id, place__owner=request.user)
+        tickets = Ticket.objects.filter(queue=queue).order_by('number')
+        serializer = TicketSerializer(tickets, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request, queue_id):
+        queue = get_object_or_404(Queue, id=queue_id, place__owner=request.user)
+
+        ticket_id = request.data.get("ticket_id")
+        new_status = request.data.get("status")
+
+        if new_status not in dict(Ticket.STATUS_CHOICES):
+            return Response({"detail": "Invalid status"}, status=status.HTTP_400_BAD_REQUEST)
+
+        ticket = get_object_or_404(Ticket, id=ticket_id, queue=queue)
+        ticket.status = new_status
+        ticket.save()
+
+        send_queue_update(queue.place.id, {
+            "type": "ticket_status_changed",
+            "ticket_id": ticket.id,
+            "new_status": new_status
+        })
+
+        return Response(TicketSerializer(ticket).data, status=status.HTTP_200_OK)
+# ---------- WebSocket Placeholder (برای مرحله بعدی) ---------- #
+# در مرحله بعد: Django Channels + Redis برای اطلاع‌رسانی بلادرنگ صف‌ها

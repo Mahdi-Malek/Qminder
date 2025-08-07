@@ -19,12 +19,21 @@ class Queue(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 class Ticket(models.Model):
-    queue = models.ForeignKey(Queue, on_delete=models.CASCADE, related_name='tickets')
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tickets')
-    number = models.IntegerField()
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('used', 'Used'),
+        ('canceled', 'Canceled'),
+    ]
+    
+    queue = models.ForeignKey(Queue, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    number = models.PositiveIntegerField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='active')
     created_at = models.DateTimeField(auto_now_add=True)
-    is_active = models.BooleanField(default=True)
-    served = models.BooleanField(default=False)
+
+    def is_active(self):
+        return self.status == 'active'
+
 
     class Meta:
         unique_together = ('queue', 'number')
