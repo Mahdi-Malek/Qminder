@@ -4,13 +4,22 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.views import APIView
 from django.db.models import Max
 from .models import Place, Queue, Ticket
-from .serializers import PlaceSerializer, QueueSerializer, TicketSerializer
+from .serializers import PlaceSerializer, QueueSerializer, TicketSerializer, RegisterSerializer
 from math import radians, cos, sin, asin, sqrt
 from rest_framework.exceptions import ValidationError, NotAuthenticated
 from rest_framework.generics import ListCreateAPIView, RetrieveUpdateAPIView
 from rest_framework.permissions import BasePermission
 from django.shortcuts import get_object_or_404
 from .utils import send_queue_update
+from rest_framework import generics
+from django.contrib.auth import get_user_model
+from rest_framework import viewsets, permissions
+from .serializers import UserSerializer, AdminUpdateUserSerializer
+from .permissions import IsSystemAdmin
+
+
+
+User = get_user_model()
 
 
 
@@ -99,7 +108,6 @@ class LeaveQueueView(APIView):
         return Response({'status': 'left'}, status=status.HTTP_200_OK)
 
 
-# ---------- گام بعدی: داشبورد مدیریت صف ---------- #
 
 class IsPlaceAdmin(BasePermission):
     def has_permission(self, request, view):
@@ -148,5 +156,53 @@ class AdminTicketsView(APIView):
         })
 
         return Response(TicketSerializer(ticket).data, status=status.HTTP_200_OK)
-# ---------- WebSocket Placeholder (برای مرحله بعدی) ---------- #
-# در مرحله بعد: Django Channels + Redis برای اطلاع‌رسانی بلادرنگ صف‌ها
+
+
+class RegisterView(generics.CreateAPIView):
+    queryset = User.objects.all()
+    serializer_class = RegisterSerializer
+    permission_classes = [AllowAny]
+
+
+
+class IsPlaceOwner(permissions.BasePermission):
+    def has_object_permission(self, request, view, obj):
+        return obj.owner == request.user or request.user.is_staff
+
+class PlaceViewSet(viewsets.ModelViewSet):
+    serializer_class = PlaceSerializer
+    permission_classes = [permissions.IsAuthenticated, IsPlaceOwner]
+
+    def get_queryset(self):
+        # مدیر سیستم همه مکان‌ها را می‌بیند
+        if self.request.user.is_staff:
+            return Place.objects.all()
+        return Place.objects.filter(owner=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.request.user)
+
+
+
+class UserManagementViewSet(viewsets.ViewSet):
+    permission_classes = [IsSystemAdmin]
+
+    def list(self, request):
+        """لیست همه کاربران"""
+        users = User.objects.all()
+        serializer = UserSerializer(users, many=True)
+        return Response(serializer.data)
+
+    def retrieve(self, request, pk=None):
+        """دریافت مشخصات یک کاربر"""
+        user = get_object_or_404(User, pk=pk)
+        serializer = UserSerializer(user)
+        return Response(serializer.data)
+
+    def update_role(self, request, pk=None):
+        """تغییر نقش کاربر"""
+        user = get_object_or_404(User, pk=pk)
+        serializer = AdminUpdateUserSerializer(user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({"detail": "Role updated successfully"})
