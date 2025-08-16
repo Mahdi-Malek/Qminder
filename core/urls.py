@@ -3,7 +3,8 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     NearbyPlacesView, JoinQueueView, LeaveQueueView,
     PlaceViewSet, QueueAdminViewSet, AdminTicketsView,
-    NotificationListView, MarkNotificationReadView, RegisterView
+    NotificationListView, MarkNotificationReadView, RegisterView,
+    AnalyticsView
 )
 
 router = DefaultRouter()
@@ -18,6 +19,8 @@ urlpatterns = [
     path("admin/queues/<int:queue_id>/tickets/", AdminTicketsView.as_view({"get": "list", "patch": "partial_update"}), name="admin-tickets"),
     path("notifications/", NotificationListView.as_view(), name="notifications"),
     path("notifications/<int:pk>/read/", MarkNotificationReadView.as_view(), name="notification-read"),
+    path("analytics/", AnalyticsView.as_view(), name="analytics"),
+
 ]
 
 urlpatterns += router.urls

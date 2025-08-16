@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.utils import timezone
+from django.db.models import JSONField
 
 
 class UserRoles:
@@ -19,11 +20,17 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=UserRoles.CHOICES, default=UserRoles.CUSTOMER)
     phone = models.CharField(max_length=20, blank=True, null=True)
 
-    def is_system_admin(self):
-        return self.role == UserRoles.SUPER_ADMIN
+    @property
+    def is_customer(self):
+        return self.role == UserRoles.CUSTOMER
 
+    @property
     def is_place_admin(self):
         return self.role == UserRoles.PLACE_ADMIN
+
+    @property
+    def is_system_admin(self):
+        return self.role == UserRoles.SUPER_ADMIN
 
     def __str__(self):
         return self.username
@@ -61,6 +68,8 @@ class Queue(models.Model):
 
     # statistics
     processed_count = models.PositiveIntegerField(default=0)
+    total_tickets = models.PositiveIntegerField(default=0)
+    last_ticket_number = models.PositiveIntegerField(default=0)
     average_wait_time = models.DurationField(null=True, blank=True)
 
     class Meta:
@@ -79,20 +88,26 @@ class Queue(models.Model):
     def update_statistics(self):
         tickets = self.tickets.filter(status=TicketStatus.USED)
         self.processed_count = tickets.count()
+
         wait_seconds = []
         for t in tickets:
             if t.called_at and t.created_at:
-                wait_seconds.append((t.called_at - t.created_at).total_seconds())
+                diff = (t.called_at - t.created_at).total_seconds()
+                print(t.called_at, t.created_at)
+                print(diff)
+                if diff > 0:  # فقط اختلاف مثبت
+                    wait_seconds.append(diff)
+
         if wait_seconds:
             from datetime import timedelta
             avg_seconds = sum(wait_seconds) / len(wait_seconds)
             self.average_wait_time = timedelta(seconds=avg_seconds)
         else:
-            self.average_wait_time = None
+            self.average_wait_time = timezone.timedelta(seconds=0)
+
         self.save()
 
-    def __str__(self):
-        return f"{self.place.name} - {self.name}"
+
 
 
 class TicketStatus:
@@ -123,9 +138,12 @@ class Ticket(models.Model):
         ordering = ("number",)
 
     def call(self):
-        from django.utils import timezone
         self.called_at = timezone.now()
+        self.save()
+
+    def complete(self):
         self.status = TicketStatus.USED
+        self.completed_at = timezone.now()
         self.save()
 
     def requeue(self):
@@ -135,7 +153,6 @@ class Ticket(models.Model):
         self.save()
 
     def cancel(self, reason=None):
-        from django.utils import timezone
         self.status = TicketStatus.CANCELED
         self.cancel_reason = reason
         self.completed_at = timezone.now()
@@ -143,6 +160,12 @@ class Ticket(models.Model):
 
     def __str__(self):
         return f"Ticket #{self.number} ({self.queue})"
+    
+    @property
+    def wait_time_seconds(self):
+        if self.called_at and self.created_at:
+            return (self.called_at - self.created_at).total_seconds()
+        return None
 
 
 class Notification(models.Model):
@@ -155,6 +178,7 @@ class Notification(models.Model):
     title = models.CharField(max_length=255)
     message = models.TextField()
     channel = models.CharField(max_length=20, choices=CHANNEL_CHOICES, default="websocket")
+    extra_data = JSONField(blank=True, null=True)
     is_read = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=timezone.now)
 

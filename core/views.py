@@ -3,17 +3,19 @@ from rest_framework import status, generics, viewsets
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
-from django.db.models import Max
+from django.db.models import Max, Count, Avg, ExpressionWrapper, F, DurationField
 from django.utils.dateparse import parse_datetime
-from .models import Place, Queue, Ticket, Notification
+from .models import Place, Queue, Ticket, Notification, TicketStatus    
 from .serializers import (
     PlaceSerializer, QueueSerializer, QueueCreateSerializer,
-    TicketSerializer, RegisterSerializer, NotificationSerializer
+    TicketSerializer, RegisterSerializer, NotificationSerializer, TicketCreateSerializer,
 )
 from .permissions import IsPlaceAdmin, IsSystemAdmin, IsQueueOwnerAdmin
-from .utils import create_notification, send_ws_notification, send_email_notification, send_queue_update
+from .utils import create_notification, send_ws_notification, send_email_notification, send_queue_update,send_queue_event, send_user_notification
 from math import radians, cos, sin, asin, sqrt
-
+from django.utils import timezone
+from rest_framework.decorators import action
+from django.db import models
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -199,3 +201,135 @@ class MarkNotificationReadView(APIView):
         notif.is_read = True
         notif.save()
         return Response({"status": "read"})
+
+
+class AnalyticsView(APIView):
+    permission_classes = [IsPlaceAdmin | IsSystemAdmin]
+
+    def get(self, request, *args, **kwargs):
+        """
+        ورودی:
+          - place_id (اختیاری)
+          - start_date, end_date (اختیاری)
+          - interval = daily / weekly
+        """
+
+        place_id = request.query_params.get("place_id")
+        start_date = request.query_params.get("start_date")
+        end_date = request.query_params.get("end_date")
+        interval = request.query_params.get("interval", "daily")
+
+        qs = Ticket.objects.all()
+
+        if place_id:
+            qs = qs.filter(queue__place_id=place_id)
+
+        if start_date:
+            qs = qs.filter(created_at__gte=start_date)
+        if end_date:
+            qs = qs.filter(created_at__lte=end_date)
+
+        # آمار کلی
+        total_customers = qs.count()
+        used_tickets = qs.filter(status="used").count()
+        canceled_tickets = qs.filter(status="canceled").count()
+        active_tickets = qs.filter(status="active").count()
+
+        # محاسبه میانگین زمان انتظار
+        avg_wait_time = qs.filter(
+            called_at__isnull=False, created_at__isnull=False
+        ).annotate(
+            wait_time=ExpressionWrapper(F("called_at") - F("created_at"), output_field=DurationField())
+        ).aggregate(
+            avg_wait=Avg("wait_time")
+        )["avg_wait"]
+
+        avg_wait_seconds = avg_wait_time.total_seconds() if avg_wait_time else 0
+
+        # گزارش روزانه/هفتگی
+        if interval == "daily":
+            group_format = "%Y-%m-%d"
+        else:
+            group_format = "%Y-%W"  # هفته سال
+
+        from django.db.models.functions import TruncDate, TruncWeek
+
+        if interval == "daily":
+            grouped = (
+                qs.annotate(date=TruncDate("created_at"))
+                .values("date")
+                .annotate(count=Count("id"))
+                .order_by("date")
+            )
+        else:
+            grouped = (
+                qs.annotate(week=TruncWeek("created_at"))
+                .values("week")
+                .annotate(count=Count("id"))
+                .order_by("week")
+            )
+
+        result = {
+            "summary": {
+                "total_customers": total_customers,
+                "used_tickets": used_tickets,
+                "canceled_tickets": canceled_tickets,
+                "active_tickets": active_tickets,
+                "avg_wait_time_seconds": avg_wait_seconds,
+            },
+            "timeline": list(grouped),
+        }
+
+        return Response(result)
+
+
+
+
+
+class TicketAdminViewSet(viewsets.ModelViewSet):
+    queryset = Ticket.objects.all()
+    serializer_class = TicketSerializer
+    permission_classes = [IsAuthenticated, IsPlaceAdmin | IsQueueOwnerAdmin]
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return TicketCreateSerializer
+        return TicketSerializer
+
+    def perform_create(self, serializer):
+        return serializer.save()
+
+    @action(detail=True, methods=["post"])
+    def call(self, request, pk=None):
+        ticket = self.get_object()
+        ticket.call()
+        send_queue_event(ticket.queue.place.id, "ticket_called", TicketSerializer(ticket).data)
+        send_user_notification(ticket.user.id, f"Your ticket {ticket.number} is called!")
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def requeue(self, request, pk=None):
+        ticket = self.get_object()
+        ticket.requeue()
+        send_queue_event(ticket.queue.place.id, "ticket_requeued", TicketSerializer(ticket).data)
+        send_user_notification(ticket.user.id, f"Your ticket {ticket.number} has been requeued.")
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        ticket = self.get_object()
+        reason = request.data.get("reason", "")
+        ticket.cancel(reason=reason)
+        send_queue_event(ticket.queue.place.id, "ticket_canceled", TicketSerializer(ticket).data)
+        send_user_notification(ticket.user.id, f"Your ticket {ticket.number} was canceled. Reason: {reason}")
+        return Response(TicketSerializer(ticket).data)
+
+    @action(detail=True, methods=["post"])
+    def complete(self, request, pk=None):
+        ticket = self.get_object()
+        ticket.status = TicketStatus.USED
+        ticket.completed_at = timezone.now()
+        ticket.save()
+        send_queue_event(ticket.queue.place.id, "ticket_completed", TicketSerializer(ticket).data)
+        send_user_notification(ticket.user.id, f"Your ticket {ticket.number} has been completed. Thank you!")
+        return Response(TicketSerializer(ticket).data)

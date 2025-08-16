@@ -88,11 +88,32 @@ class TicketSerializer(serializers.ModelSerializer):
                   "cancel_reason", "created_at", "called_at", "completed_at")
 
 
-class TicketCreateSerializer(serializers.Serializer):
-    # used for creating ticket by user
-    # client sends no ticket number; server assigns
+class TicketCreateSerializer(serializers.ModelSerializer):
     class Meta:
-        pass
+        model = Ticket
+        fields = ("id", "queue", "user", "number", "status",
+                  "created_at", "called_at", "completed_at")
+        read_only_fields = ("id", "user", "number", "status",
+                            "created_at", "called_at", "completed_at")
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        user = request.user
+
+        queue = validated_data["queue"]
+
+        # آخرین شماره نوبت در این صف
+        last_ticket = queue.tickets.order_by("-number").first()
+        next_number = last_ticket.number + 1 if last_ticket else 1
+
+        ticket = Ticket.objects.create(
+            queue=queue,
+            user=user,
+            number=next_number,
+            status=TicketStatus.ACTIVE,
+        )
+        return ticket
+
 
 
 class NotificationSerializer(serializers.ModelSerializer):
