@@ -9,6 +9,7 @@ from .models import Place, Queue, Ticket, Notification, TicketStatus
 from .serializers import (
     PlaceSerializer, QueueSerializer, QueueCreateSerializer,
     TicketSerializer, RegisterSerializer, NotificationSerializer, TicketCreateSerializer,
+    UserSerializer,
 )
 from .permissions import IsPlaceAdmin, IsSystemAdmin, IsQueueOwnerAdmin
 from .utils import create_notification, send_ws_notification, send_email_notification, send_queue_update,send_queue_event, send_user_notification
@@ -16,6 +17,11 @@ from math import radians, cos, sin, asin, sqrt
 from django.utils import timezone
 from rest_framework.decorators import action
 from django.db import models
+from rest_framework import generics, permissions
+from django.contrib.auth import get_user_model
+from rest_framework_simplejwt.tokens import RefreshToken
+
+User = get_user_model()
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -333,3 +339,32 @@ class TicketAdminViewSet(viewsets.ModelViewSet):
         send_queue_event(ticket.queue.place.id, "ticket_completed", TicketSerializer(ticket).data)
         send_user_notification(ticket.user.id, f"Your ticket {ticket.number} has been completed. Thank you!")
         return Response(TicketSerializer(ticket).data)
+
+
+
+
+
+class RegisterView(generics.CreateAPIView):
+    serializer_class = RegisterSerializer
+    permission_classes = [permissions.AllowAny]
+
+class UserProfileView(generics.RetrieveAPIView):
+    serializer_class = UserSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user
+
+
+
+class LogoutView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        try:
+            refresh_token = request.data.get("refresh")
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            return Response({"detail": "Successfully logged out."}, status=status.HTTP_205_RESET_CONTENT)
+        except Exception as e:
+            return Response({"error": "Invalid token"}, status=status.HTTP_400_BAD_REQUEST)

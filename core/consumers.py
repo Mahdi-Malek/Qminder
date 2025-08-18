@@ -1,17 +1,23 @@
 import json
+import jwt
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
 from django.contrib.auth import get_user_model
+from urllib.parse import parse_qs 
+from django.core.exceptions import ObjectDoesNotExist
+from rest_framework_simplejwt.tokens import AccessToken
+from django.conf import settings
+
 
 User = get_user_model()
 
 
 class QueueConsumer(AsyncWebsocketConsumer):
     async def connect(self):
+        User = self.scope["user"].__class__
         self.place_id = self.scope['url_route']['kwargs']['place_id']
         self.group_name = f"place_{self.place_id}"
 
-        # اضافه کردن به گروه
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
@@ -36,29 +42,37 @@ class QueueConsumer(AsyncWebsocketConsumer):
 
 class NotificationConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        user = self.scope.get("user")
+        query_string = self.scope.get('query_string', b'').decode()
+        query_params = parse_qs(query_string)
+        token = query_params.get('token', [None])[0]
 
-        # اگر کاربر احراز هویت نشده باشد، اتصال قطع می‌شود
-        if not user or not getattr(user, "is_authenticated", False):
-            await self.close()
+        if not token:
+            await self.close(code=4001)  # No token provided
             return
 
-        # در صورت نیاز: گرفتن دوباره کاربر از DB (ایمن برای async)
-        self.user = await sync_to_async(User.objects.get)(id=user.id)
+        try:
+            # استفاده از SimpleJWT برای اعتبارسنجی توکن
+            access = AccessToken(token)
+            user_id = access["user_id"]
 
-        self.group_name = f"user_{self.user.id}"
-        await self.channel_layer.group_add(self.group_name, self.channel_name)
-        await self.accept()
+            # واکشی یوزر از دیتابیس
+            self.user = await sync_to_async(User.objects.get)(id=user_id)
+
+            # ساختن group مخصوص این یوزر
+            self.group_name = f"user_{self.user.id}"
+            await self.channel_layer.group_add(self.group_name, self.channel_name)
+            await self.accept()
+
+        except Exception as e:
+            await self.close(code=4003)  # Invalid token or other error
 
     async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(self.group_name, self.channel_name)
+        if hasattr(self, "group_name"):
+            await self.channel_layer.group_discard(
+                self.group_name,
+                self.channel_name
+            )
 
     async def send_notification(self, event):
-        """
-        ارسال اعلان به کلاینت.
-        """
-        message = event.get("message")
-        if isinstance(message, dict):
-            await self.send(text_data=json.dumps(message, ensure_ascii=False))
-        else:
-            await self.send(text_data=str(message))
+        await self.send(text_data=json.dumps(event["message"]))
+

@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'core',
     'channels',
@@ -42,10 +43,19 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.common.CommonMiddleware',
 ]
 
-MIDDLEWARE.insert(0, 'corsheaders.middleware.CorsMiddleware')
-CORS_ALLOW_ALL_ORIGINS = True
+
+# CORS settings
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+]
 
 ROOT_URLCONF = 'smartqueue.urls'
 
@@ -66,7 +76,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'smartqueue.wsgi.application'
 
-ASGI_APPLICATION = "config.asgi.application"
+ASGI_APPLICATION = "smartqueue.asgi.application"
 # Database
 DATABASES = {
     'default': {
@@ -123,13 +133,19 @@ SIMPLE_JWT = {
 }
 
 # Redis backend for Channels
-CHANNEL_LAYERS = {
+ASGI_APPLICATION = "smartqueue.asgi.application"
+"""CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
             "hosts": [("127.0.0.1", 6379)],
         },
     },
+}"""
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"  # Temporary for testing
+    }
 }
 
 
